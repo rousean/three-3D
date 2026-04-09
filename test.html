@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1" />
+	<title>Truchet field — Three.js</title>
+	<style>
+		html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+		canvas { display: block; width: 50%; height: 100%; }
+	</style>
+</head>
+<body>
+	<script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+	<script>
+		// Port of test.svelte / Shadertoy 3lVczV (CC0) — WGSL → GLSL for Three.js
+		const vertexShader = `
+			varying vec2 vUv;
+			void main() {
+				vUv = uv;
+				gl_Position = vec4(position.xy, 0.0, 1.0);
+			}
+		`;
+
+		const fragmentShader = `
+			precision highp float;
+			precision highp int;
+
+			varying vec2 vUv;
+			uniform float uTime;
+			uniform vec2 uResolution;
+
+			#define PI 3.141592654
+			#define TAU 6.283185307179586
+			const float H_VARIANT = 0.67;
+			const float TRUCHET_LINE_WIDTH = 0.05;
+			const float TRUCHET_RADIUS = 6.9;
+			const float TRUCHET_REP_MIN = 8.0;
+			const float TRUCHET_REP_MAX = 25.0;
+			const float TRUCHET_SMOOTH_MIN = 0.05;
+			const float TRUCHET_SMOOTH_MAX = 0.125;
+			const float TRUCHET_ROT_SPEED = 0.02;
+			const float TRUCHET_SCROLL_SPEED = 0.05;
+			const int FBM_OCTAVES = 4;
+			const float FBM_ATTENUATION = -0.45;
+			const float FBM_SCALE = 3.03;
+			const float FBM_ROTATION = 1.0;
+
+			mat2 rotM(float a) {
+				float c = cos(a);
+				float s = sin(a);
+				return mat2(c, s, -s, c);
+			}
+
+			float l2(vec2 p) {
+				return dot(p, p);
+			}
+
+			vec3 hsv2rgb(vec3 c) {
+				vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+				vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+				return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.yyy);
+			}
+
+			float tanhApprox(float x) {
+				float x2 = x * x;
+				return clamp(x * (27.0 + x2) / (27.0 + 9.0 * x2), -1.0, 1.0);
+			}
+
+			float sabs(float x, float k) {
+				float ax = abs(x);
+				float smoothAbs = (0.5 / k) * x * x + 0.5 * k;
+				return mix(smoothAbs, ax, step(k, ax));
+			}
+
+			float circle(vec2 p, float r) {
+				return length(p) - r;
+			}
+
+			float hash3(vec3 coInput) {
+				vec3 co = coInput + vec3(100.0);
+				return fract(sin(dot(co, vec3(12.9898, 58.233, 71.2228))) * 13758.5453);
+			}
+
+			vec2 toPolar(vec2 p) {
+				return vec2(length(p), atan(p.y, p.x));
+			}
+
+			vec2 toRect(vec2 p) {
+				return vec2(p.x * cos(p.y), p.x * sin(p.y));
+			}
+
+			float modFloat(float x, float y) {
+				return x - y * floor(x / y);
+			}
+
+			float pmin(float a, float b, float k) {
+				float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
+				return mix(b, a, h) - k * h * (1.0 - h);
+			}
+
+			float pmax(float a, float b, float k) {
+				return -pmin(-a, -b, k);
+			}
+
+			struct Mod2Result {
+				vec2 p;
+				vec2 cell;
+			};
+
+			Mod2Result mod2_1(vec2 pInput) {
+				Mod2Result r;
+				r.cell = floor(pInput + vec2(0.5));
+				r.p = fract(pInput + vec2(0.5)) - vec2(0.5);
+				return r;
+			}
+
+			struct ModMirrorResult {
+				float p;
+			};
+
+			ModMirrorResult modMirror1(float pInput, float size) {
+				float halfSize = size * 0.5;
+				float cell = floor((pInput + halfSize) / size);
+				float p = modFloat(pInput + halfSize, size) - halfSize;
+				p *= modFloat(cell, 2.0) * 2.0 - 1.0;
+				ModMirrorResult r;
+				r.p = p;
+				return r;
+			}
+
+			vec2 smoothKaleidoscope(vec2 pInput, float sm, float rep) {
+				vec2 hpp = toPolar(pInput);
+				float ts = 2.5;
+				hpp.x = tanhApprox(hpp.x / ts) * ts;
+
+				ModMirrorResult mirror = modMirror1(hpp.y, TAU / rep);
+				hpp.y = mirror.p;
+
+				float sa = PI / rep - sabs(PI / rep - abs(hpp.y), sm);
+				hpp.y = sign(hpp.y) * sa;
+
+				return toRect(hpp);
+			}
+
+			float truchetCell0(vec2 p) {
+				float d0 = circle(p - vec2(0.5, 0.5), 0.5);
+				float d1 = circle(p + vec2(0.5, 0.5), 0.5);
+				return min(d0, d1);
+			}
+
+			float truchetCell1(vec2 p) {
+				float d0 = abs(p.x);
+				float d1 = abs(p.y);
+				float d2 = circle(p, 0.25);
+				return min(min(d0, d1), d2);
+			}
+
+			vec2 truchet(vec2 pInput, float h, float time) {
+				float hd = circle(pInput, TRUCHET_RADIUS);
+
+				vec2 hp = pInput;
+				float rep = 2.0 * floor(mix(TRUCHET_REP_MIN, TRUCHET_REP_MAX, h));
+				float sm = mix(TRUCHET_SMOOTH_MIN, TRUCHET_SMOOTH_MAX, h) * 24.0 / rep;
+
+				hp = smoothKaleidoscope(hp, sm, rep);
+				hp = rotM(TRUCHET_ROT_SPEED * time) * hp;
+				hp += vec2(time * TRUCHET_SCROLL_SPEED);
+
+				Mod2Result wrapped = mod2_1(hp);
+				hp = wrapped.p;
+				vec2 hn = wrapped.cell;
+
+				float r = hash3(vec3(hn, h));
+				int rotIndex = int(min(3.0, floor(r * 4.0)));
+
+				mat2 trRot;
+				if (rotIndex == 0) trRot = mat2(1.0, 0.0, 0.0, 1.0);
+				else if (rotIndex == 1) trRot = mat2(0.0, 1.0, -1.0, 0.0);
+				else if (rotIndex == 2) trRot = mat2(-1.0, 0.0, 0.0, -1.0);
+				else trRot = mat2(0.0, -1.0, 1.0, 0.0);
+
+				hp = trRot * hp;
+
+				float cd0 = truchetCell0(hp);
+				float cd1 = truchetCell1(hp);
+				float d0 = fract(r * 13.0) > 0.5 ? cd1 : cd0;
+				float d = abs(d0) - TRUCHET_LINE_WIDTH;
+				return vec2(hd, d);
+			}
+
+			float df(vec2 p, float h, float time) {
+				return truchet(p, h, time).y;
+			}
+
+			float hf(vec2 p, float h, float time) {
+				float decay = 0.75 / (1.0 + 0.125 * l2(p));
+				float d = df(p, h, time);
+				float ww = 0.085;
+				float height = smoothstep(0.0, ww, d);
+				return pmax(2.0 * height * decay, 0.5, 0.25);
+			}
+
+			float fbm(vec2 pInput, float h, float time) {
+				float aa = FBM_ATTENUATION;
+				mat2 pp = FBM_SCALE * rotM(FBM_ROTATION);
+
+				vec2 p = pInput;
+				float a = 1.0;
+				float d = 0.0;
+				float heightAccum = 0.0;
+
+				for (int i = 0; i < FBM_OCTAVES; i++) {
+					heightAccum += a * hf(p, h, time);
+					d += a;
+					a *= aa;
+					p = pp * p;
+				}
+
+				return heightAccum / d;
+			}
+
+			float heightField(vec2 pInput, float time) {
+				vec2 p = pInput;
+				float h = H_VARIANT;
+				float wave = 0.5 + 0.5 * sin(time * 0.2);
+
+				p.x = sabs(p.x, 0.1 * abs(p.y) + 0.001);
+				p = rotM(time * 0.075) * p;
+				p = rotM(-PI * tanhApprox(0.125 * (l2(p) - 0.25))) * p;
+				p *= mix(1.5, 2.5, mix(wave, 1.0 - wave, h));
+
+				return fbm(p, h, time);
+			}
+
+			vec3 normalFromHeight(vec2 p, float time, vec2 resolution) {
+				float eps = 4.0 / resolution.y;
+				vec2 ex = vec2(eps, 0.0);
+				vec2 ey = vec2(0.0, eps);
+
+				float nx = heightField(p - ex, time) - heightField(p + ex, time);
+				float ny = 2.0 * eps;
+				float nz = heightField(p - ey, time) - heightField(p + ey, time);
+
+				return normalize(vec3(nx, ny, nz));
+			}
+
+			vec3 applyPostProcess(vec3 colInput, vec2 q) {
+				vec3 col = colInput;
+				col = pow(clamp(col, vec3(0.0), vec3(1.0)), vec3(1.0 / 2.2));
+				col = col * 0.6 + 0.4 * col * col * (vec3(3.0) - 2.0 * col);
+				float g = dot(col, vec3(0.33));
+				col = mix(col, vec3(g), vec3(-0.4));
+				col *= 0.5 + 0.5 * pow(19.0 * q.x * q.y * (1.0 - q.x) * (1.0 - q.y), 0.7);
+				return col;
+			}
+
+			void main() {
+				vec2 uv = vUv;
+				vec2 resolution = uResolution;
+				float time = uTime;
+
+				vec2 q = vec2(uv.x, 1.0 - uv.y);
+				vec2 p = -vec2(1.0, 1.0) + 2.0 * q;
+				p.x *= resolution.x / resolution.y;
+
+				vec3 ld1 = normalize(vec3(1.0, 1.0, 1.0));
+				vec3 ld2 = normalize(vec3(-1.0, 0.75, 1.0));
+
+				float l = length(p);
+				float h = heightField(p, time);
+				vec3 n = normalFromHeight(p, time, resolution);
+
+				vec3 hsv = vec3(
+					mix(0.6, 0.9, 0.5 + 0.5 * sin(time * 0.1 - 10.0 * h * l + (p.x + p.y))),
+					tanhApprox(0.5 * h),
+					tanhApprox(10.0 * l * h + 0.1)
+				);
+				hsv = vec3(hsv.x, clamp(hsv.y, 0.0, 1.0), clamp(hsv.z, 0.0, 1.0));
+
+				vec3 baseCol1 = hsv2rgb(hsv);
+				vec3 baseCol2 = sqrt(baseCol1.zyx);
+
+				float diff1 = max(dot(n, ld1), 0.0);
+				float diff2 = max(dot(n, ld2), 0.0);
+				float basePow = 1.5;
+
+				vec3 col = vec3(0.0);
+				col += 1.00 * baseCol1 * pow(diff1, 16.0 * basePow);
+				col += 0.10 * baseCol1 * pow(diff1, 4.0 * basePow);
+				col += 0.15 * baseCol2 * pow(diff2, 8.0 * basePow);
+				col += 0.02 * baseCol2 * pow(diff2, 2.0 * basePow);
+				col *= 8.0;
+
+				col = applyPostProcess(col, q);
+				gl_FragColor = vec4(col, 1.0);
+			}
+		`;
+
+		const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+		const scene = new THREE.Scene();
+		const geometry = new THREE.PlaneGeometry(2, 2);
+		const material = new THREE.ShaderMaterial({
+			uniforms: {
+				uTime: { value: 0 },
+				uResolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) }
+			},
+			vertexShader,
+			fragmentShader,
+			depthTest: false,
+			depthWrite: false
+		});
+		const mesh = new THREE.Mesh(geometry, material);
+		scene.add(mesh);
+
+		const renderer = new THREE.WebGLRenderer({ antialias: false, alpha: false });
+		renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+		renderer.setSize(window.innerWidth, window.innerHeight);
+		renderer.outputColorSpace = THREE.SRGBColorSpace;
+		document.body.appendChild(renderer.domElement);
+
+		function onResize() {
+			const w = window.innerWidth;
+			const h = window.innerHeight;
+			material.uniforms.uResolution.value.set(w, h);
+			renderer.setSize(w, h);
+		}
+		window.addEventListener('resize', onResize);
+
+		const clock = new THREE.Clock();
+		function animate() {
+			material.uniforms.uTime.value = clock.getElapsedTime();
+			renderer.render(scene, camera);
+			requestAnimationFrame(animate);
+		}
+		animate();
+	</script>
+</body>
+</html>

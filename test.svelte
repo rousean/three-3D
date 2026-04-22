@@ -250,44 +250,6 @@ fn normal(p: vec2f, time: f32, resolution: vec2f) -> vec3f {
 		fragment: `
 #include <truchet_field>
 
-fn frag(uv: vec2f) -> vec4f {
-	let resolution = motiongpuFrame.resolution;
-	let time = motiongpuFrame.time;
-
-	let q = vec2f(uv.x, 1.0 - uv.y);
-	var p = -vec2f(1.0, 1.0) + 2.0 * q;
-	p.x *= resolution.x / resolution.y;
-
-	let ld1 = normalize(vec3f(1.0, 1.0, 1.0));
-	let ld2 = normalize(vec3f(-1.0, 0.75, 1.0));
-
-	let l = length(p);
-	let h = height(p, time);
-	let n = normal(p, time, resolution);
-
-	var hsv = vec3f(
-		mix(0.6, 0.9, 0.5 + 0.5 * sin(time * 0.1 - 10.0 * h * l + (p.x + p.y))),
-		tanhApprox(0.5 * h),
-		tanhApprox(10.0 * l * h + 0.1)
-	);
-	hsv = vec3f(hsv.x, clamp(hsv.y, 0.0, 1.0), clamp(hsv.z, 0.0, 1.0));
-
-	let baseCol1 = hsv2rgb(hsv);
-	let baseCol2 = sqrt(baseCol1.zyx);
-
-	let diff1 = max(dot(n, ld1), 0.0);
-	let diff2 = max(dot(n, ld2), 0.0);
-	let basePow = 1.5;
-
-	var col = vec3f(0.0);
-	col += 1.00 * baseCol1 * pow(diff1, 16.0 * basePow);
-	col += 0.10 * baseCol1 * pow(diff1, 4.0 * basePow);
-	col += 0.15 * baseCol2 * pow(diff2, 8.0 * basePow);
-	col += 0.02 * baseCol2 * pow(diff2, 2.0 * basePow);
-	col *= 8.0;
-
-	return vec4f(col, 1.0);
-}
 `
 	});
 </script>

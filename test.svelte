@@ -233,18 +233,6 @@ fn height(pInput: vec2f, time: f32) -> f32 {
 
 	return fbm(p, h, time);
 }
-
-fn normal(p: vec2f, time: f32, resolution: vec2f) -> vec3f {
-	let eps = 4.0 / resolution.y;
-	let ex = vec2f(eps, 0.0);
-	let ey = vec2f(0.0, eps);
-
-	let nx = height(p - ex, time) - height(p + ex, time);
-	let ny = 2.0 * eps;
-	let nz = height(p - ey, time) - height(p + ey, time);
-
-	return normalize(vec3f(nx, ny, nz));
-}
 `
 		},
 		fragment: `

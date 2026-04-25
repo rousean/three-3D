@@ -38,16 +38,6 @@
           this.createPie()
         }
 
-        createElement() {
-          this.svg = d3
-            .select(`#${this.id}`)
-            .append("svg")
-            .attr("width", this.width)
-            .attr("height", this.height)
-            .append("g")
-            .attr("transform", `translate(${this.width / 2}, ${this.height / 2})`)
-        }
-
         createPie() {
           // 构建比例尺 南丁格尔模式使用
           const lineScale = d3

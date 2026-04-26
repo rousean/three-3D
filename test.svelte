@@ -226,11 +226,6 @@ fn height(pInput: vec2f, time: f32) -> f32 {
 	let h = H_VARIANT;
 	let wave = 0.5 + 0.5 * sin(time * 0.2);
 
-	p.x = sabs(p.x, 0.1 * abs(p.y) + 0.001);
-	p = rot(time * 0.075) * p;
-	p = rot(-PI * tanhApprox(0.125 * (l2(p) - 0.25))) * p;
-	p *= mix(1.5, 2.5, mix(wave, 1.0 - wave, h));
-
 	return fbm(p, h, time);
 }
 `
